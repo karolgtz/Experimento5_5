@@ -1,0 +1,27 @@
+% Read wifi intensity data from a ThingSpeak channel over the past 3 days 
+% to calculate the high and low wifi intensity and write to another channel. 
+   
+% 3 contains wifi intensity data. 
+   
+% Channel ID to read data from 
+readChannelID = 1198600; 
+% WifiIntensity Field ID 
+WifiIntensityFieldID = 3; 
+   
+% Channel Read API Key   
+% If your channel is private, then enter the read API Key between the '' below: 
+readAPIKey = 'VPIWKLROJ7IKBGCM'; 
+   
+[tempF,timeStamp] = thingSpeakRead(readChannelID,'Fields',WifiIntensityFieldID, ...
+                                                'numDays',3,'ReadKey',readAPIKey); 
+   
+% Calculate the maximum and minimum temperatures 
+[maxTempF,maxTempIndex] = max(tempF); 
+[minTempF,minTempIndex] = min(tempF); 
+   
+% Select the timestamps at which the maximum and minimum wifi intensities were measured
+timeMaxTemp = timeStamp(maxTempIndex); 
+timeMinTemp = timeStamp(minTempIndex); 
+   
+display(maxTempF,'Maximum Wifi Intensity for the past 3 days is'); 
+display(minTempF,'Minimum Wifi Intensity for the past 3 days is'); 
