@@ -1,0 +1,259 @@
+#include "ThingSpeak.h"
+#include "Credenciales.h"
+#include <DHTesp.h>
+#include <ESP8266WiFi.h>
+// *** Aquí  colocar librerías de otros sensores
+#include <NewPing.h> //ultrasónico
+#include <CapacitiveSensor.h> //sensor táctil
+#include <BlynkSimpleEsp8266.h> //luz
+
+// Parámetros de acceso a red WiFi 
+char ssid[] = CRED_SSID;   // nombre de la red WiFi
+char password[] = CRED_PASS; // password de acceso a la red WiFi
+
+//DAtos de configuración del Sensor DHT11
+#define DHTTYPE DHT11                           // Especificar el modelo DHT11
+#define DHTPIN  13                              // ASignar el GPIO 13 (D7 en el PCB) para los datos del DHT11
+DHTesp dht;                                     // Crear un objeto de la clase DHT compatible con ESPXXXX
+float h, t; 
+
+// *** Aquí colocar las declaraciones de objetos de otros sensores
+#define TRIGGER 5         // pin D1 en la placa del ESP8266
+#define ECHO    4         // pin D2  en la placa del ESP8266
+#define MAX_DISTANCE 200  // Configuracr a máximo 2 metros
+// Crear un objeto "sonar" para el manejo del sensor
+NewPing sonar(TRIGGER, ECHO, MAX_DISTANCE); //ultrasónico
+
+#define SendPin 14    // D5 en ESP8266 sensor táctil
+#define BotonPin 12   // D6 en ESP8266 sensor táctil
+CapacitiveSensor   Boton = CapacitiveSensor(SendPin,BotonPin); //sensor táctil
+
+//float LDR;
+#define BLYNK_PRINT Serial //luz
+#define led D1 //luz
+#define sensor A0 //luz
+
+// variable para el estado del LED interno del ESP8266
+bool EDO_LED=LOW;     
+String ESTADO = "APAGADO";
+String color = "RED";
+
+// variable para capturar la intensidad de la señal WiFi
+long rssi;
+
+// Crea una instancia del servidor en el ESP8266 por el puerto 80
+WiFiServer server(80);
+
+// Crear una instancia para el cliente web que consultará la página 
+WiFiClient  client;
+
+unsigned long myChannelNumber = CRED_CH_ID;
+const char * myWriteAPIKey = CRED_WRITE_APIKEY;
+
+String s; // variable para contener la página web en HTML
+
+void setup() // Built-in initialization block
+{
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);     // Initialize the LED_BUILTIN pin as an output
+  //Configurar el sensor DHT11
+  dht.setup(DHTPIN,  DHTesp::DHT11);
+  // Ir a rutina para configurar y conectar a WiFi
+  conectarWiFi();    
+  // Inicializar conexión vía MQTT a ThingSpeak.com
+  ThingSpeak.begin(client);  
+}
+
+void loop() {// Main loop auto-repeats
+  Serial.print("Conectado a ");
+  Serial.println(ssid);
+  Serial.println("Servidor Web en la dirección: ");
+  Serial.println(WiFi.localIP()); // Print the IP address
+  Serial.println(s);
+  
+ // Leemos la humedad relativa
+  h = dht.getHumidity();
+  // Leemos la temperatura en grados centígrados (por defecto)
+  t = dht.getTemperature();
+  rssi = WiFi.RSSI(); 
+
+  // *** Aquí colocar las lecturas de otros sensores
+  int uS = sonar.ping_median(); //ultrasónico
+  float d= (uS /US_ROUNDTRIP_CM); //ultrasónico
+
+  int umbralBoton =10000;    // Umbral de activación del botón sensor táctil
+  int TimeOut = 500;         // Tiempo de espera máximo sensor táctil
+  void sendSensor() //luz
+  
+  int LDR = analogRead(sensor);
+    if(LDR <150)
+  {
+    digitalWrite(led, HIGH);
+    Blynk.notify("Light ON");
+  }
+  else
+  {
+    digitalWrite(led, LOW);  
+  }
+  Blynk.virtualWrite(V5, LDR); //luz
+  
+  Serial.print("Humedad %: ");
+  Serial.println(h);
+  Serial.print("Temperatura °C: ");
+  Serial.println(t);
+  Serial.print("Intensidad WiFi dB: ");
+  Serial.println(rssi);
+  Serial.print("Actuador: ");
+  Serial.println(ESTADO);
+
+  // *** Aquí imprimir lecturas de otros sensores
+  Serial.print("Nivel: "); //ultrasónico
+  Serial.println(15 - d); //ultrasónico
+
+  Serial.println("Boton:"); //sensor táctil
+  Serial.println(lectura); //sensor táctil
+  
+  Serial.print("Intensidad: "); //luz
+  Serial.println(LDR); //luz
+
+  // Asignar los campos 
+  ThingSpeak.setField(1, h);
+  ThingSpeak.setField(2, t);
+  ThingSpeak.setField(3, rssi);
+  ThingSpeak.setField(4, EDO_LED);
+
+  // *** Aquí asignar fields para los otros sensores
+  ThingSpeak.setField(5, 15 - d); //ultrasónico
+  ThingSpeak.setField(6, lectura); //sensor táctil
+  ThingSpeak.setField(7, LDR); //luz
+
+  // Escribir datos en el canal de ThingSpeak.com
+  int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if(x == 200){
+    Serial.println("Datos actualizados con éxito en Thingspeak.com...");
+  }
+  else{
+    Serial.println("Problema! NO se pudo actualizar datos en Thingspeak.com.... Código de error " + String(x));
+  }
+
+
+ // Checa si un cliente se ha conectado
+  WiFiClient client = server.available();
+  if (!client) {
+    return;
+  }
+  delay(1);
+  
+  while(!client.available()){ }
+  // Lee la primera línea de respuesta del cliente:
+  String req = client.readStringUntil('\r');
+  
+  // compara la respuesta y toma decisiones:
+  if (req.indexOf("ON") != -1){
+    EDO_LED = HIGH;
+    ESTADO = "ENCENDIDO";
+    color = "lime";
+    digitalWrite(LED_BUILTIN,!EDO_LED); // se coloca EDO_LED negado porque el led de la placa es de lógica invertida
+  }
+ 
+  if (req.indexOf("OFF") != -1){
+    EDO_LED = LOW;
+    ESTADO = "APAGADO";
+    color = "salmon";
+    digitalWrite(LED_BUILTIN, !EDO_LED); // se coloca EDO_LED negado porque el led de la placa es de lógica invertida
+  }
+  
+  s="";
+  // Código HTML a enviar como respuesta
+  //------------------------------------------------------------------------------------------------------
+  // inicia variable s como string con todo el contenido HTML
+  // coloca titulos y encabezados
+  s = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+  s += "<html><meta http-equiv='Content-Type' content='text/html; charset=utf-8'/>"; 
+  // actualiza la página cada 1 segundos   
+  s += "<meta HTTP-EQUIV=refresh content=1>";
+  s += "<head><title>Nodo de Clima local</title></head><body align=left>";
+  s += "<align=left><font color=\"red\">Variables ambientales disponibles:</font><br>";  
+  s += "<hr/>"; // coloca línea horizontal
+  s += "<table align=center>";
+  s += "<tr><td>";
+  s += "<strong>Temperatura: </strong></td><td>";
+  s +=  t;
+  s += " °C</td><td>0 <meter value=";
+  s +=  t;
+  s += " min = 0 max= 40></meter>40°C</td></tr>";
+  s += "<tr><td>";
+  s += "<strong>Humedad relativa: </strong></td><td>";
+  s +=  h;
+  s += " %</td><td>0<meter value=";
+  s +=  h;
+  s += " min = 0 max= 100></meter>100%</td></tr>"; 
+  s += "<tr><td>";
+  s += "<strong>Intensidad de la señal WiFi: </strong></td><td>";
+  s +=  rssi;
+  s += " dB</td><td>-120<meter value=";
+  s +=  rssi;
+  s += " min = -120 max= 0></meter>dB</td></tr>";
+
+// *** Aquí agregar HTML para mostrar otros sensores
+  s += "<tr><td>"; //ultrasónico
+  s += "<strong>Nivel de líquido: </strong></td><td>";
+  s +=  // MAXNIVEL - d;
+  s += " dB</td><td>-120<meter value=";
+  s +=  // MAXNIVEL - d;
+  s += " min = 0 max=";
+  s += // MAXNIVEL - d;
+  s += "0></meter>dB</td></tr>"; //ultrasónico
+
+  s += "<tr><td>"; //sensor táctil
+  s += "<strong>Sensor táctil </strong></td><td>";
+  s +=  lectura;
+  s += " dB</td><td>-120<meter value=";
+  s +=  lectura;
+  s += " min = 0 max= 100></meter>dB</td></tr>"; //sensor táctil
+
+  s += "<tr><td>"; //luz
+  s += "<strong>Nivel de intensidad de luz: </strong></td><td>";
+  s +=  LDR;
+  s += " dB</td><td>-120<meter value=";
+  s +=  LDR;
+  s += " min = 0 max= 500></meter>dB</td></tr>"; //luz
+   
+  s += "<tr><td>";
+  s += "<strong>Estado de actuador: </strong></td><td bgcolor=";
+  s +=  color;
+  s += ">";
+  s += ESTADO;
+  s += "</td></tr>";  
+  s += "<tr><td><strong>Comando de encendido: </strong></td>"; 
+  s += "<td><button onclick=\"location.href='/ON'\">Encender</button></td>";
+  s += "<td><button onclick=\"location.href='/OFF'\">Apagar</button></td>";
+  s += "</tr>";
+  s += "</table>";
+  s += "<hr/>"; // coloca linea horizontal
+  s += "<p>&nbsp;</p>"; // cierra linea
+  s += "</body></html>";
+  //------------------------------------------------------------------------------------------------------
+  // Fin código HTML
+  // Envía la respuesta al cliente
+  client.print(s);
+  delay(500);
+  client.flush(); // limpia buffer de datos del cliente
+}
+
+void  conectarWiFi(){
+  Serial.print("Intentando conexión con ");
+  Serial.println(ssid);
+  WiFi.mode(WIFI_STA);  // Modo de conexión Station (servidor)
+  WiFi.begin(ssid, password); // prepara conexión WiFi a la red 
+  while (WiFi.status() != WL_CONNECTED) { // Intentar mientras no haya conexión
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("Conexión a red WiFi exitosa");
+  // Start the server
+  server.begin(); // Inicializa el módulo ESP8266 como servidor
+  Serial.println("* Servidor Web iniciado *");
+  Serial.print("Disponible en la dirección: ");
+  Serial.println(WiFi.localIP()); // Print the IP address
+}
